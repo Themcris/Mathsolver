@@ -1,0 +1,70 @@
+<!DOCTYPE html> <html lang="es"> <head>
+    <meta charset="UTF-8"> <meta name="viewport" 
+    content="width=device-width, initial-scale=1.0"> 
+    <title>MathSolver Test</title> <style>
+        body { font-family: system-ui, sans-serif; 
+        padding: 20px; background: #0b1016; color: 
+        #e8eef4; } input { width: 100%; max-width: 400px; 
+        padding: 10px; font-size: 18px; margin-bottom: 
+        10px; background: #1b2733; color: #fff; border: 
+        1px solid #35485b; border-radius: 8px; } button { 
+        padding: 10px 20px; font-size: 16px; background: 
+        #19e6bd; color: #04201a; font-weight: bold; 
+        border: none; border-radius: 8px; cursor: pointer; 
+        }
+        #panel-container { margin-top: 20px; }
+    </style> </head> <body>
+    <h2>MathSolver</h2> <p>Escribe: 
+    <code>det([[1,2],[3,4]])</code> o 
+    <code>2x+3=7</code></p> <input id="user-input" 
+    type="text" value="det([[1,2],[3,4]])"> <button 
+    id="btn-resolver">Resolver</button>
+    
+    <!-- Aquí Claude inyectará el HTML bonito --> <div 
+    id="panel-container"></div>
+
+    <script type="module"> import { OmniCore } from 
+        './js/core.js'; import { iniciarRouter, 
+        resolverEntrada } from './js/router.js'; import { 
+        mountStepsPanel } from './js/StepsPanel.js'; // 
+        <-- Importamos el panel de Claude
+
+        const panelContainer = 
+        document.getElementById('panel-container'); const 
+        btn = document.getElementById('btn-resolver');
+
+        async function init() { try {
+                panelContainer.innerHTML = "<p>Cargando 
+                motor WASM...</p>"; const core = await 
+                OmniCore.load('./omnicalc.wasm');
+                
+                iniciarRouter({ core: core }); 
+                panelContainer.innerHTML = "<p>✅ Motor C 
+                y Router listos.</p>";
+
+                btn.onclick = async () => { const input = 
+                    document.getElementById('user-input').value; 
+                    panelContainer.innerHTML = 
+                    "<p>Resolviendo...</p>"; try {
+                        const resultado = await 
+                        resolverEntrada(input);
+                        
+                        // ¡Aquí usamos la función de 
+                        // Claude para dibujar los pasos!
+                        mountStepsPanel(panelContainer, 
+                        resultado);
+                        
+                    } catch (e) {
+                        panelContainer.innerHTML = `<p 
+                        style="color:red">❌ Error: 
+                        ${e.message}</p>`;
+                    }
+                };
+            } catch (e) {
+                panelContainer.innerHTML = `<p 
+                style="color:red">❌ Error al cargar WASM: 
+                ${e.message}</p>`;
+            }
+        }
+        init(); </script>
+</body> </html>

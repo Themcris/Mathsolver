@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1120">
+  <meta name="color-scheme" content="dark">
+<title>MathSolver</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="/vendor/katex/katex.min.css">
+  <!-- Los scripts defer y el módulo se ejecutan en el orden del documento: nerdamer y KaTeX quedan listos antes. -->
+  <script defer src="/vendor/nerdamer/all.min.js"></script>
+  <script defer src="/vendor/katex/katex.min.js"></script>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/png" href="/icon-192.png">
+</head>
+<body>
+  <div class="app">
+
+    <!-- ═════════ Pantalla 1: calculadora ═════════ -->
+    <section class="pantalla pantalla-calc" id="pantalla-calc" aria-label="Calculadora">
+      <header class="barra">
+        <h1 class="marca">Math<span>Solver</span></h1>
+        <div class="menu">
+          <button type="button" class="btn-menu" id="btn-menu" aria-expanded="false" aria-controls="menu-panel">Ejemplos <span aria-hidden="true">▾</span></button>
+          <div class="menu-panel" id="menu-panel" hidden></div>
+        </div>
+      </header>
+
+      <div class="display vacio" id="display" role="textbox" aria-readonly="true" aria-label="Expresión" tabindex="0">
+        <p class="estado" id="estado" data-estado="cargando" role="status">
+          <span class="punto" aria-hidden="true"></span><span id="estado-texto">Iniciando…</span>
+        </p>
+        <div class="display-linea"><span class="display-texto" id="display-texto"></span><span class="cursor" aria-hidden="true"></span><span id="display-post"></span></div>
+      </div>
+
+      <div class="teclado" id="teclado" role="group" aria-label="Teclado"></div>
+    </section>
+
+    <!-- ═════════ Pantalla 2: paso a paso ═════════ -->
+    <section class="pantalla pantalla-res" id="pantalla-res" aria-label="Resolución" hidden>
+      <header class="barra-res">
+        <button type="button" class="btn-volver" id="btn-volver">← Volver</button>
+        <div class="problema" id="problema"></div>
+      </header>
+      <div class="res-cuerpo" id="resultado" aria-busy="false"></div>
+    </section>
+
+  </div>
+
+    <!-- Aviso de versión nueva (lo muestra el registro del service worker) -->
+  <div class="actualizar" id="actualizar" role="status" hidden>
+    <span>Hay una versión nueva de MathSolver.</span>
+    <button type="button" id="btn-actualizar">Actualizar</button>
+  </div>
+
+  <script type="module">
+    import { OmniCore } from './js/core.js';
+    import { iniciarRouter, resolverEntrada, mejorarConSimbolico, nerdamerDisponible } from './js/router.js';
+    import { mountStepsPanel } from './js/StepsPanel.js';
+
+    // Debe ser la misma fuente que ya usas con OmniCore.load(...) en tu proyecto.
+    const WASM_URL = './omnicalc.wasm';
+    const ESPERA_ARRANQUE_MS = 6000;
+
+    const $ = (id) => document.getElementById(id);
+    const pCalc = $('pantalla-calc'), pRes = $('pantalla-res');
+    const display = $('display'), displayTxt = $('display-texto');
+    const resultado = $('resultado'), problema = $('problema');
+    const pausa = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // ───────────── Estado del motor ─────────────
+    function estado(tipo, texto) {
+      $('estado').dataset.estado = tipo;
+      $('estado-texto').textContent = texto;
+    }
+    async function cargarCore() {
+      try { return await OmniCore.load(WASM_URL); }
+      catch (primero) {
+        try { return await OmniCore.load(await fetch(WASM_URL)); } catch { throw primero; }
+      }
+    }
+    async function iniciar() {
+      const faltan = [];
+      try { iniciarRouter({ core: await cargarCore() }); }
+      catch (e) { console.error('Motor numérico no disponible:', e); faltan.push('motor numérico'); }
+      if (!nerdamerDisponible()) faltan.push('nerdamer');
+      if (faltan.length) estado('aviso', `Sin ${faltan.join(' ni ')}`);
+      else estado('ok', 'Motores listos');
+    }
+    const arranque = iniciar(); // nunca rechaza: captura sus propios errores
+
+    // ───────────── Display ─────────────
+    let expr = '';
+    const BONITO = [[/\*/g, '·'], [/sqrt\(/g, '√('], [/\bpi\b/g, 'π'], [/\binf\b/g, '∞'], [/\bdiff\(/g, 'd/dx('], [/\bintegral\(/g, '∫('], [/\blimit\(/g, 'lim(']];
+    const bonito = (s) => BONITO.reduce((t, [re, r]) => t.replace(re, r), s);
+
+    let pos = 0; // posición del cursor dentro de expr
+    const displayPost = $('display-post');
+    function pintar() {
+      pos = Math.max(0, Math.min(pos, expr.length));
+      displayTxt.textContent = bonito(expr.slice(0, pos));
+      displayPost.textContent = bonito(expr.slice(pos));
+      display.classList.toggle('vacio', !expr);
+      display.scrollTop = display.scrollHeight;
+    }
+    const FUNCIONES = /(sqrt\(|sin\(|cos\(|tan\(|ln\(|log\(|factor\(|diff\(|integral\(|limit\(|det\(|pi)$/;
+    function agregar(t) {
+      // Escribir un “)” justo antes de un “)” ya existente (autocompletado) solo avanza el cursor
+      if ((t === ')' || t === ']') && expr[pos] === t) { pos++; pintar(); return; }
+      expr = expr.slice(0, pos) + t + expr.slice(pos);
+      pos += t.length;
+      // Las funciones se insertan con su paréntesis de cierre y el cursor dentro: factor(|)
+      if (t === 'factor(') expr = expr.slice(0, pos) + ')' + expr.slice(pos);
+      pintar();
+    }
+    function borrarUno() {
+      if (!pos) return;
+      const antes = expr.slice(0, pos);
+      const m = antes.match(FUNCIONES);
+      const n = m ? m[0].length : 1;
+      let desde = pos - n, hasta = pos;
+      if (m && m[0].endsWith('(') && expr[pos] === ')') hasta++; // borra el par vacío “()”
+      expr = expr.slice(0, desde) + expr.slice(hasta);
+      pos = desde;
+      pintar();
+    }
+    const limpiar = () => { expr = ''; pos = 0; pintar(); };
+    const mover = (d) => { pos = d === 'home' ? 0 : d === 'end' ? expr.length : pos + d; pintar(); };
+
+    /** Cierra los paréntesis y corchetes que falten (el usuario no tiene que escribir el último “)”). */
+    function cerrarAbiertos(s) {
+      const pila = [];
+      for (const c of s) {
+        if (c === '(') pila.push(')');
+        else if (c === '[') pila.push(']');
+        else if (c === ')' || c === ']') { if (pila[pila.length - 1] === c) pila.pop(); }
+      }
+      return s + pila.reverse().join('');
+    }
+
+    // ───────────── Teclado ─────────────
+    // [etiqueta, texto a insertar (null = acción), clase, nombre accesible]
+    const TECLAS = [
+      ['sin', 'sin(', 'fn', 'Seno'], ['cos', 'cos(', 'fn', 'Coseno'], ['tan', 'tan(', 'fn', 'Tangente'],
+      ['ln', 'ln(', 'fn', 'Logaritmo natural'], ['log', 'log(', 'fn', 'Logaritmo'], ['√', 'sqrt(', 'fn', 'Raíz cuadrada'],
+      ['π', 'pi', 'fn', 'Pi'], ['x', 'x', 'var', 'Variable x'], ['y', 'y', 'var', 'Variable y'],
+      ['d/dx', 'diff(', 'fn', 'Derivada'], ['∫', 'integral(', 'fn', 'Integral'], ['lim', 'limit(', 'fn', 'Límite'],
+      ['det', 'det(', 'fn', 'Determinante'], ['e', 'e', 'var', 'Número e'], [',', ',', 'pun', 'Coma'],
+      ['[', '[', 'pun', 'Corchete que abre'], [']', ']', 'pun', 'Corchete que cierra'], ['a=b', '=', 'pun', 'Signo igual de una ecuación'],
+      ['7', '7', 'num'], ['8', '8', 'num'], ['9', '9', 'num'], ['(', '(', 'op', 'Paréntesis que abre'], [')', ')', 'op', 'Paréntesis que cierra'], ['AC', 'AC', 'ac', 'Borrar todo'],
+      ['4', '4', 'num'], ['5', '5', 'num'], ['6', '6', 'num'], ['^', '^', 'op', 'Potencia'], ['÷', '÷', 'op', 'Dividir'], ['⌫', 'DEL', 'del', 'Borrar el último'],
+      ['1', '1', 'num'], ['2', '2', 'num'], ['3', '3', 'num'], ['×', '*', 'op', 'Multiplicar'], ['−', '-', 'op', 'Restar'], ['+', '+', 'op', 'Sumar'],
+      ['0', '0', 'num'], ['.', '.', 'num', 'Punto decimal'],
+      ['a/b', '/', 'frac', 'Fracción: barra entre numerador y denominador'], ['a b/c', ' ', 'frac', 'Número mixto: espacio entre la parte entera y la fracción'],
+    ];
+    const teclado = $('teclado');
+    for (const [txt, ins, cls, nombre] of TECLAS) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `k k-${cls}`;
+      b.textContent = txt;
+      b.dataset.ins = ins;
+      if (nombre) b.setAttribute('aria-label', nombre);
+      teclado.append(b);
+    }
+    const igual = document.createElement('button');
+    igual.type = 'button';
+    igual.className = 'k k-igual';
+    igual.id = 'k-igual';
+    igual.textContent = '=';
+    igual.setAttribute('aria-label', 'Resolver');
+    teclado.append(igual);
+    // Última fila (bajo el "="): x² para ecuaciones cuadráticas y factorizar.
+    for (const [txt, ins, cls, nombre] of [['x²', '^2', 'pot', 'Al cuadrado (escribe ^2)'], ['factor', 'factor(', 'pot', 'Factorizar un polinomio']]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `k k-${cls}`;
+      b.textContent = txt;
+      b.dataset.ins = ins;
+      b.setAttribute('aria-label', nombre);
+      teclado.append(b);
+    }
+
+    teclado.addEventListener('click', (e) => {
+      const k = e.target.closest('.k');
+      if (!k) return;
+      if (k === igual) resolver();
+      else if (k.dataset.ins === 'AC') limpiar();
+      else if (k.dataset.ins === 'DEL') borrarUno();
+      else if (k.dataset.ins === ' ') { if (/\d$/.test(expr.slice(0, pos))) agregar(' '); } // número mixto: solo tras una cifra (1 1/2)
+      else agregar(k.dataset.ins);
+    });
+
+    // Teclado físico (útil en escritorio y con teclados Bluetooth)
+    document.addEventListener('keydown', (e) => {
+      if (vista !== 'calc' || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === 'Escape' && !$('menu-panel').hidden) { cerrarMenu(true); return; }
+      if (e.target.closest?.('button') && (e.key === 'Enter' || e.key === ' ')) return; // el botón enfocado se activa solo
+      if (e.key === 'Enter') { e.preventDefault(); resolver(); }
+      else if (e.key === 'Backspace') { e.preventDefault(); borrarUno(); }
+      else if (e.key === 'Escape') limpiar();
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); mover(-1); }
+      else if (e.key === 'ArrowRight') { e.preventDefault(); mover(1); }
+      else if (e.key === 'Home') { e.preventDefault(); mover('home'); }
+      else if (e.key === 'End') { e.preventDefault(); mover('end'); }
+      else if (e.key.length === 1 && /[0-9a-zA-Z+\-*\/^().,=\[\];' ]/.test(e.key)) { e.preventDefault(); agregar(e.key); }
+    });
+
+    // ───────────── Menú de ejemplos y recientes ─────────────
+    const EJEMPLOS = [
+      ['Suma de fracciones', '3/4+2/3'],
+      ['Fracciones: resta y producto', '(5/6-1/4)*3/2'],
+      ['Números mixtos', '1 1/2+2 1/3'],
+      ['Ecuación lineal', '2x+3=7'],
+      ['Ecuación cuadrática', 'x^2-5x+6=0'],
+      ['Factorizar', 'factor(x^2-5x+6)'],
+      ['Derivada: cociente y producto', 'diff(x^2*sin(x)/ln(x), x)'],
+      ['Integral indefinida', 'integral(x*e^x, x)'],
+      ['Integral definida (numérica)', 'integral(x^2, 0, 1)'],
+      ['Límite', 'limit(sin(x)/x, x, 0)'],
+      ['Determinante 2×2', 'det([[1,2],[3,4]])'],
+      ['Ecuación diferencial', "y'' + 3y' + 2y = 0"],
+    ];
+    const CLAVE = 'mathsolver:historial';
+    const leer = () => { try { return JSON.parse(localStorage.getItem(CLAVE)) ?? []; } catch { return []; } };
+    let historial = leer();
+
+    const btnMenu = $('btn-menu'), menuPanel = $('menu-panel');
+    function itemMenu(titulo, q) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'menu-item';
+      b.dataset.q = q;
+      if (titulo) { const t = document.createElement('span'); t.className = 'mi-t'; t.textContent = titulo; b.append(t); }
+      const c = document.createElement('span'); c.className = 'mi-q'; c.textContent = q; b.append(c);
+      return b;
+    }
+    function seccion(txt) { const p = document.createElement('p'); p.className = 'menu-seccion'; p.textContent = txt; return p; }
+    function pintarMenu() {
+      const nodos = [seccion('Ejemplos'), ...EJEMPLOS.map(([t, q]) => itemMenu(t, q))];
+      if (historial.length) {
+        const borrar = document.createElement('button');
+        borrar.type = 'button';
+        borrar.className = 'menu-item menu-borrar';
+        borrar.dataset.accion = 'borrar';
+        borrar.textContent = 'Borrar recientes';
+        nodos.push(seccion('Recientes'), ...historial.slice(0, 8).map((q) => itemMenu(null, q)), borrar);
+      }
+      menuPanel.replaceChildren(...nodos);
+    }
+    function abrirMenu() { pintarMenu(); menuPanel.hidden = false; btnMenu.setAttribute('aria-expanded', 'true'); }
+    function cerrarMenu(devolverFoco = false) {
+      menuPanel.hidden = true;
+      btnMenu.setAttribute('aria-expanded', 'false');
+      if (devolverFoco) btnMenu.focus();
+    }
+    btnMenu.addEventListener('click', () => (menuPanel.hidden ? abrirMenu() : cerrarMenu()));
+    menuPanel.addEventListener('click', (e) => {
+      const it = e.target.closest('.menu-item');
+      if (!it) return;
+      if (it.dataset.accion === 'borrar') {
+        historial = [];
+        try { localStorage.removeItem(CLAVE); } catch { /* sin almacenamiento */ }
+        pintarMenu();
+        return;
+      }
+      expr = it.dataset.q; pos = expr.length; // se carga en el display; el usuario decide cuándo resolver
+      pintar();
+      cerrarMenu();
+    });
+    document.addEventListener('pointerdown', (e) => {
+      if (!menuPanel.hidden && !e.target.closest('.menu')) cerrarMenu();
+    });
+    function guardar(q) {
+      historial = [q, ...historial.filter((h) => h !== q)].slice(0, 12);
+      try { localStorage.setItem(CLAVE, JSON.stringify(historial)); } catch { /* sin almacenamiento */ }
+    }
+
+    // ───────────── Pantallas ─────────────
+    let vista = 'calc';
+    let ticket = 0; // descarta respuestas de una resolución que el usuario ya abandonó
+
+    function mostrarVista(v) {
+      vista = v;
+      pCalc.hidden = v !== 'calc';
+      pRes.hidden = v !== 'res';
+      const el = v === 'calc' ? pCalc : pRes;
+      el.classList.remove('entra-der', 'entra-izq');
+      void el.offsetWidth; // reinicia la animación
+      el.classList.add(v === 'res' ? 'entra-der' : 'entra-izq');
+    }
+    function volver() {
+      ticket++;
+      resultado.replaceChildren();
+      resultado.setAttribute('aria-busy', 'false');
+      problema.textContent = '';
+      mostrarVista('calc');
+    }
+    $('btn-volver').addEventListener('click', () => (history.state?.vista === 'res' ? history.back() : volver()));
+    window.addEventListener('popstate', () => { if (vista === 'res') volver(); }); // gesto/botón “atrás” del móvil
+
+    function mostrar(respuesta) {
+      mountStepsPanel(resultado, respuesta, {
+        onMejorar: (resp, progreso) => mejorarConSimbolico(resp.solicitud, progreso),
+      });
+      resultado.scrollTop = 0;
+    }
+
+    async function resolver() {
+      const q = cerrarAbiertos(expr.trim());
+      if (!q) {
+        display.classList.remove('sacude');
+        void display.offsetWidth;
+        display.classList.add('sacude');
+        return;
+      }
+      expr = q; pos = expr.length;
+      pintar();
+
+      const mi = ++ticket;
+      problema.textContent = bonito(q);
+      const espera = document.createElement('div');
+      espera.className = 'cargando';
+      espera.setAttribute('role', 'status');
+      espera.innerHTML = '<span class="spinner" aria-hidden="true"></span><span>Resolviendo…</span>';
+      resultado.replaceChildren(espera);
+      resultado.setAttribute('aria-busy', 'true');
+      mostrarVista('res');
+      history.pushState({ vista: 'res' }, '');
+      $('btn-volver').focus({ preventScroll: true });
+
+      try {
+        await Promise.race([arranque, pausa(ESPERA_ARRANQUE_MS)]); // nunca esperes indefinidamente al arranque
+        const r = await resolverEntrada(q);
+        if (mi !== ticket) return;
+        mostrar(r);
+        if (r.ok) guardar(q);
+      } catch (e) {
+        if (mi === ticket) mostrar({ ok: false, nivel: 'error', mensaje: `Error inesperado: ${e?.message ?? e}` });
+      } finally {
+        if (mi === ticket) resultado.setAttribute('aria-busy', 'false');
+      }
+    }
+
+    pintar();
+  </script>
+
+  <script>
+    // Service worker (caché sin conexión). En localhost no se registra para no ver versiones viejas mientras desarrollas:
+    //   ?sw=1  lo activa también en localhost   ·   ?sw=0  lo desinstala y borra sus cachés
+    (() => {
+      if (!('serviceWorker' in navigator)) return;
+      const q = new URLSearchParams(location.search).get('sw');
+      const local = ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
+      if (q === '0') {
+        window.addEventListener('load', async () => {
+          await Promise.all((await navigator.serviceWorker.getRegistrations()).map((r) => r.unregister()));
+          await Promise.all((await caches.keys()).filter((k) => k.startsWith('mathsolver-')).map((k) => caches.delete(k)));
+          location.replace(location.pathname); // recarga limpia, ya sin service worker
+        });
+        return;
+      }
+      if (local && q !== '1') return;
+
+      let actualizando = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => { if (actualizando) location.reload(); });
+
+      window.addEventListener('load', async () => {
+        try {
+          const reg = await navigator.serviceWorker.register('./sw.js');
+          const avisar = (sw) => {
+            document.getElementById('actualizar').hidden = false;
+            document.getElementById('btn-actualizar').onclick = () => { actualizando = true; sw.postMessage({ tipo: 'saltar-espera' }); };
+          };
+          if (reg.waiting && navigator.serviceWorker.controller) avisar(reg.waiting);
+          reg.addEventListener('updatefound', () => {
+            const nuevo = reg.installing;
+            nuevo?.addEventListener('statechange', () => { if (nuevo.state === 'installed' && navigator.serviceWorker.controller) avisar(nuevo); });
+          });
+          document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') reg.update().catch(() => {}); });
+        } catch (e) {
+          console.warn('Service worker no registrado:', e);
+        }
+      });
+    })();
+  </script>
+<script>try { navigator.storage?.persist?.(); } catch { /* opcional */ }</script></body>
+</html>

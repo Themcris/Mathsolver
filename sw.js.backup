@@ -1,0 +1,76 @@
+// sw.js — Service Worker de MathSolver (Vanilla, sin Workbox).
+// Cachés:
+//   shell-vN    app (HTML/CSS/JS/omnicalc.wasm): se precachea y se actualiza en segundo plano
+//   pyodide-vN  /pyodide/* (~30 MB): cache-first, se llena la 1.ª vez y no se vuelve a descargar
+//   cdn-vN      nerdamer y KaTeX (jsDelivr): cache-first
+// Para forzar actualización de la app sube VERSION. Si cambias archivos de /pyodide/, sube PYODIDE.
+
+const VERSION = "v5";
+const PYODIDE = 'v1';
+const SHELL = `shell-${VERSION}`;
+const PYO = `pyodide-${PYODIDE}`;
+const CDN = `cdn-${VERSION}`;
+const VIGENTES = [SHELL, PYO, CDN];
+
+const PRECACHE = [
+  './', 'index.html', 'style.css', 'omnicalc.wasm',
+  'js/core.js', 'js/router.js', 'js/ui.js', 'js/StepsPanel.js', 'js/frac.js', 'js/aritmetica.js', 'js/fracciones.js', 'js/identidades.js', 'js/especiales.js', 'js/sistemas.js',
+  'js/motorJS.js', 'js/motorPasos.js', 'js/simplificarPasos.js', 'js/motorPyodide.js', 'js/pyodideWorker.js',
+  'https://cdn.jsdelivr.net/npm/nerdamer@1.1.13/all.min.js',
+  'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js',
+  'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css',
+];
+
+self.addEventListener('install', (e) => {
+  e.waitUntil((async () => {
+    const shell = await caches.open(SHELL);
+    // Un archivo que falle no debe impedir la instalación.
+    await Promise.allSettled(PRECACHE.map((u) => {
+      const req = u.startsWith('http') ? new Request(u, { mode: 'no-cors' }) : u;
+      return shell.add(req);
+    }));
+    self.skipWaiting();
+  })());
+});
+
+self.addEventListener('activate', (e) => {
+  e.waitUntil((async () => {
+    for (const k of await caches.keys()) if (!VIGENTES.includes(k)) await caches.delete(k);
+    await self.clients.claim();
+  })());
+});
+
+const guardable = (r) => r && (r.status === 200 || r.type === 'opaque');
+
+async function cacheFirst(req, nombre) {
+  const cache = await caches.open(nombre);
+  const hit = await cache.match(req, { ignoreVary: true });
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (guardable(res)) cache.put(req, res.clone()).catch(() => {});
+  return res;
+}
+
+async function staleWhileRevalidate(req) {
+  const cache = await caches.open(SHELL);
+  const hit = await cache.match(req, { ignoreSearch: true });
+  const red = fetch(req).then((res) => { if (res.status === 200) cache.put(req, res.clone()).catch(() => {}); return res; });
+  if (hit) { red.catch(() => {}); return hit; }
+  return red;
+}
+
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.method !== 'GET' || req.headers.has('range')) return; // deja pasar peticiones parciales
+  const url = new URL(req.url);
+
+  if (url.origin === location.origin) {
+    if (url.pathname === '/sw.js') return;
+    if (url.pathname.includes('/pyodide/')) { e.respondWith(cacheFirst(req, PYO)); return; }
+    e.respondWith(
+      staleWhileRevalidate(req).catch(async () => (await caches.match('index.html')) || new Response('Sin conexión', { status: 503 })),
+    );
+    return;
+  }
+  if (url.hostname === 'cdn.jsdelivr.net') e.respondWith(cacheFirst(req, CDN));
+});
