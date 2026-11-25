@@ -151,6 +151,8 @@ const pasoAst = (desc, ...asts) => {
   const lista = asts.filter((x, i) => i === 0 || str(x) !== str(asts[i - 1])); // sin igualdades repetidas
   return paso(desc, lista.map(str).join(' = '), lista.map(tex).join(' = '));
 };
+/** ¿El último paso ya termina en esta misma expresión? (evita pasos que repiten el anterior) */
+const yaTermina = (pasos, expr) => pasos.length > 0 && String(pasos[pasos.length - 1].ecuacion ?? '').split(' = ').pop() === expr;
 const numerar = (l) => l.map((p, i) => ({ numero: i + 1, ...p }));
 
 function unirPiezas(piezas) {
@@ -498,7 +500,7 @@ function factorizarParte(P, nombre) {
   }
   if (!pIgual(prodPoly(c, m, facts), P)) return null; // comprobación exacta
   const ast = productoAst(c, m, facts);
-  if (str(ast) !== str(polyAst(P))) pasos.push(pasoAst(`${nombre[0].toUpperCase()}${nombre.slice(1)} factorizado`, polyAst(P), ast));
+  if (str(ast) !== str(polyAst(P)) && !yaTermina(pasos, str(ast))) pasos.push(pasoAst(`${nombre[0].toUpperCase()}${nombre.slice(1)} factorizado`, polyAst(P), ast));
   return { c, m, facts, pasos, ast };
 }
 
@@ -537,7 +539,8 @@ function resolverRacional(ast) {
   const Df = factorizarParte(PD, 'denominador');
   if (!Nf || !Df) return null;
   pasos.push(...Nf.pasos, ...Df.pasos);
-  pasos.push(pasoAst('Reescribimos la fracción con ambos términos factorizados', Div(Nf.ast, Df.ast)));
+  const sinCambio = str(Nf.ast) === str(polyAst(PN)) && str(Df.ast) === str(polyAst(PD));
+  if (!sinCambio) pasos.push(pasoAst('Reescribimos la fracción con ambos términos factorizados', Div(Nf.ast, Df.ast)));
 
   // Factores comunes
   const comunM = {};
@@ -572,7 +575,7 @@ function resolverRacional(ast) {
     if (gEnt > 1n) partes.push(String(gEnt));
     const antes = Div(Nf.ast, Df.ast);
     let desc = partes.length
-      ? `Dividimos numerador y denominador entre sus factores comunes: ${partes.join(' · ')}`
+      ? `Cancelamos los factores comunes de numerador y denominador: ${partes.join(' · ')}`
       : 'Pasamos el signo al numerador y reducimos los coeficientes';
     if (Df.c.isNeg() && partes.length) desc += '; el signo del denominador pasa al numerador';
     pasos.push(pasoAst(desc, antes, resAst));
@@ -583,8 +586,8 @@ function resolverRacional(ast) {
   const base = str(resAst), baseT = tex(resAst);
   if (rest.length) {
     pasos.push(paso('Restricciones del dominio: el denominador original no puede valer 0, así que se excluyen estos valores',
-      rest.map((x) => x.a).join(',  '), rest.map((x) => x.t).join(',\; ')));
-    pasos.push(paso('Resultado (válido para los valores permitidos del dominio)', `${base},  con ${rest.map((x) => x.a).join(', ')}`, `${baseT},\\quad ${rest.map((x) => x.t).join(',\; ')}`));
+      rest.map((x) => x.a).join(',  '), rest.map((x) => x.t).join(',\\; ')));
+    pasos.push(paso('Resultado (válido para los valores permitidos del dominio)', `${base},  con ${rest.map((x) => x.a).join(', ')}`, `${baseT},\\quad ${rest.map((x) => x.t).join(',\\; ')}`));
   }
 
   // Comprobación exacta: N·D' = N'·D (productos cruzados) y numérica
@@ -635,8 +638,8 @@ export function resolverAlgebraico(modo, expr, { debug = false } = {}) {
         if (!pIgual(prod, P)) return null; // comprobación exacta
         pasos.push(...sub);
         if (!sub.length || (fc.trivial && facts.length === 1 && facts[0].mult === 1 && pIgual(facts[0].p, P))) {
-          pasos.push(paso('No se puede factorizar más con coeficientes racionales', str(polyAst(P)), tex(polyAst(P))));
-        } else if (sub.length >= 2) {
+          if (!sub.length || !yaTermina(pasos, str(polyAst(P)))) pasos.push(paso('No se puede factorizar más con coeficientes racionales', str(polyAst(P)), tex(polyAst(P))));
+        } else if (sub.length >= 2 && !yaTermina(pasos, str(resAst))) {
           pasos.push(pasoAst('Forma factorizada final', polyAst(P), resAst));
         }
       }
@@ -644,6 +647,7 @@ export function resolverAlgebraico(modo, expr, { debug = false } = {}) {
       pasos.push(...red.pasos);
       resAst = polyAst(P);
       if (!red.pasos.length) {
+        pasos.pop(); // el paso «original» sería idéntico al siguiente: se deja uno solo
         pasos.push(paso(modo === 'expandir' ? 'La expresión ya está desarrollada y ordenada' : 'La expresión ya está simplificada', str(resAst), tex(resAst)));
       }
       if (modo === 'simplificar' && T.length >= 2) {
@@ -656,7 +660,7 @@ export function resolverAlgebraico(modo, expr, { debug = false } = {}) {
           const tf = factorizarParaSugerencia(P);
           if (tf) {
             const pedido = `factor(${str(resAst)})`;
-            pasos.push(paso('Sugerencia: simplificar no factoriza. Este polinomio sí se puede factorizar; para ver el desarrollo escribe', pedido, `\mathrm{factor}\left(${tex(resAst)}\right)`));
+            pasos.push(paso('Sugerencia: simplificar no factoriza. Este polinomio sí se puede factorizar; para ver el desarrollo escribe', pedido, `\\mathrm{factor}\\left(${tex(resAst)}\\right)`));
           }
         }
       }

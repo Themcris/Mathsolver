@@ -229,7 +229,8 @@ function multiplicar(a, b) {
     const desc = d === 0
       ? `La cifra de las ${nombrePos(i)} es 0: el producto parcial es 0`
       : i === 0 ? `Multiplicamos ${A} por la cifra de las ${nombrePos(i)}` : `Multiplicamos ${A} por la cifra de las ${nombrePos(i)} y corremos el resultado ${i} lugar${i > 1 ? 'es' : ''} a la izquierda`;
-    pasos.push(paso(desc, `${A} × ${d} = ${p}`, `${A} \\times ${d} = ${p}`, dibujoMultiplicacion(A, B, parciales, '', false)));
+    const corr = d !== 0 && i > 0 ? ` → ${p}${rep('0', i)}` : ''; // producto ya corrido a su lugar
+    pasos.push(paso(desc, `${A} × ${d} = ${p}${corr}`, `${A} \\times ${d} = ${p}${corr.replace('→', '\\to')}`, dibujoMultiplicacion(A, B, parciales, '', false)));
   });
   const total = (A * B).toString();
   if (parciales.length > 1) {

@@ -186,8 +186,8 @@ async function ecuacion(s) {
     pasos.push(
       paso('Pasar todo a un lado: forma b·x + c = 0', `${poly(0, b, c, v)} = 0`, null),
       paso('Dejar el término con x solo (restar c)', `${termino(b, 1, v).replace(/^\+ /, '')} = ${fmt(-c)}`, null),
-      paso(`Dividir entre ${par(b)}`, `${v} = ${x}`, null),
     );
+    if (Math.abs(b - 1) > 1e-12) pasos.push(paso(`Dividir entre ${par(b)}`, `${v} = ${x}`, null)); // dividir entre 1 no cambia nada
     return { ok: true, resultado: `${v} = ${x}`, pasos: numerar(pasos), nivel: 'completo', verificado: true, metodo: 'Ecuación lineal' };
   }
 
@@ -195,8 +195,10 @@ async function ecuacion(s) {
   if (co && Math.abs(co.a) > 1e-12) {
     const { a, b, c } = co;
     const D = limpio(b * b - 4 * a * c);
+    const estandar = `${poly(a, b, c, v)} = 0`;
+    const quitar = (t) => String(t).replace(/[\s*]/g, '');
+    if (quitar(eqTxt) !== quitar(estandar)) pasos.push(paso('Llevar a la forma estándar a·x² + b·x + c = 0', estandar, null)); // si ya está así, no se repite
     pasos.push(
-      paso('Llevar a la forma estándar a·x² + b·x + c = 0', `${poly(a, b, c, v)} = 0`, null),
       paso('Identificar los coeficientes', `a = ${fmt(a)},  b = ${fmt(b)},  c = ${fmt(c)}`, null),
       paso('Calcular el discriminante Δ = b² − 4ac', `Δ = ${par(b)}^2 - 4*${par(a)}*${par(c)} = ${fmt(D)}`, null),
     );

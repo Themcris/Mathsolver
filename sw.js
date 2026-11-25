@@ -6,7 +6,7 @@
 //   cdn-vN      reservada para recursos de jsDelivr (ya no se usan para Nerdamer ni KaTeX): cache-first
 // Para forzar actualización de la app sube VERSION. Si cambias archivos de /pyodide/, sube PYODIDE.
 
-const VERSION = 'v7';
+const VERSION = 'v8';
 const PYODIDE = 'v1';
 const SHELL = `shell-${VERSION}`;
 const PYO = `pyodide-${PYODIDE}`;
