@@ -7,7 +7,7 @@
 // Step = { numero, descripcion, ecuacion, latex?, profundidad }
 
 import { parsear, str, simbolos, evalAST, derivarConPasos, verificarDerivada, ErrorExpresion } from './motorPasos.js';
-import { resolverAlgebraico } from './simplificarPasos.js';
+import { resolverAlgebraico, resolverEcuacionPolinomica } from './simplificarPasos.js';
 
 const MSG_SIN_NERDAMER = 'El motor algebraico (Nerdamer) no se pudo cargar. Recarga la página; si el problema continúa, borra los datos del sitio y vuelve a abrirla.';
 /** Marca interna: el error se reconoce por su código, no por el texto del mensaje. */
@@ -223,7 +223,11 @@ async function ecuacion(s) {
     return { ok: true, resultado: soluciones.map((r) => `${v} = ${r}`).join(',  '), pasos: numerar(pasos), nivel: 'completo', verificado, metodo: 'Fórmula general' };
   }
 
-  // Otros casos (grado mayor, trascendentes): nerdamer, sin desarrollo.
+  // Polinomios de grado ≥ 3 con factores racionales: pasos propios por factorización (exactos).
+  const pol = resolverEcuacionPolinomica(s.lhs, s.rhs);
+  if (pol) return pol;
+
+  // Otros casos (sin factores racionales, trascendentes): nerdamer, sin desarrollo.
   try {
     const sol = resolverNerd(paraN(eqTxt), v);
     const items = sol.replace(/^\[|\]$/g, '').split(/,(?![^()]*\))/).map((t) => t.trim()).filter(Boolean);

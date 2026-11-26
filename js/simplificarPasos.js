@@ -676,3 +676,109 @@ export function resolverAlgebraico(modo, expr, { debug = false } = {}) {
     return null; // NoPoly, errores de sintaxis o cualquier fallo: el llamador usa nerdamer
   }
 }
+
+// ───────────── Ecuaciones polinómicas de grado ≥ 3 ─────────────
+// Se pasa todo a un lado, se factoriza (con el mismo motor de factorizar) y se iguala a 0 cada factor.
+// Devuelve null si no es una ecuación polinómica de una variable con coeficientes racionales, si el grado es < 3
+// o si queda un factor irreducible de grado ≥ 3 (entonces el router usa el motor simbólico).
+const extraerCuadrado = (n) => { // n entero > 0 → [k, m] con n = k²·m, m sin cuadrados
+  if (!Number.isSafeInteger(n) || n > 1e12) return null;
+  let k = 1, m = n;
+  for (let p = 2; p * p <= m; p++) while (m % (p * p) === 0) { m /= p * p; k *= p; }
+  return [k, m];
+};
+const gcdN = (a, b) => { a = Math.abs(a); b = Math.abs(b); while (b) [a, b] = [b, a % b]; return a; };
+
+/** Raíces de a·x² + b·x + c (enteros, a ≠ 0, Δ no cuadrado perfecto) como texto: { textos, valores (reales) | null, complejas } */
+function raicesCuadraticaTxt(a, b, D, v) {
+  const sig = a < 0 ? -1 : 1; a *= sig; b *= sig; // (−b ± k√m)/(2a) con 2a > 0 (el conjunto de raíces es el mismo)
+  const imag = D < 0;
+  const dos = extraerCuadrado(Math.abs(D));
+  if (!dos) return null;
+  const [k, m] = dos;
+  const g = gcdN(gcdN(b, k), 2 * a);
+  const bb = -b / g, kk = k / g, den = (2 * a) / g;
+  const raiz = (m === 1 ? '' : `sqrt(${m})`) + (imag ? (m === 1 ? 'i' : '*i') : '');
+  const radical = (kk === 1 ? '' : `${kk}${m === 1 && !imag ? '' : '*'}`) + raiz;
+  const num = (s) => (bb === 0 ? (s > 0 ? '' : '-') + radical : `${bb} ${s > 0 ? '+' : '-'} ${radical}`);
+  const forma = (s) => (den === 1 ? num(s) : `(${num(s)})/${den}`);
+  const textos = [1, -1].map((s) => `${v} = ${forma(s)}`);
+  const vals = imag ? null : [1, -1].map((s) => (-b + s * Math.sqrt(D)) / (2 * a));
+  return { textos, vals, imag };
+}
+
+export function resolverEcuacionPolinomica(lhsTxt, rhsTxt) {
+  try {
+    const L = parsear(lhsTxt), R = parsear(rhsTxt);
+    const ast = Sub(L, R);
+    const sims = simbolos(ast);
+    if (sims.size !== 1) return null;
+    let P;
+    try { P = aPoly(ast); } catch (e) { if (e instanceof NoPoly) return null; throw e; }
+    const U = univ(P);
+    if (!U || U.n < 3) return null;
+    const v = U.v;
+
+    const pasos = [paso('Ecuación a resolver', `${str(L)} = ${str(R)}`, `${tex(L)} = ${tex(R)}`)];
+    const ceroDer = R.t === 'num' && R.v === 0;
+    if (!(ceroDer && str(L) === str(polyAst(P)))) pasos.push(paso('Pasar todo a un lado e igualar a 0', `${str(polyAst(P))} = 0`, `${tex(polyAst(P))} = 0`));
+
+    const F = factorizarParte(P, 'polinomio');
+    if (!F) return null;
+    const hayVar = Object.keys(F.m).length > 0;
+    const irreduciblePuro = !hayVar && F.facts.length === 1 && F.facts[0].mult === 1 && F.facts[0].p.size === P.size && pIgual(F.facts[0].p, P);
+    if (irreduciblePuro) return null; // sin factores racionales: lo resuelve el motor simbólico
+    if (F.facts.some((f) => { const u = univ(f.p); return !u || u.n >= 3; })) return null;
+    pasos.push(...F.pasos);
+
+    pasos.push(paso('Un producto vale 0 solo cuando algún factor vale 0: igualamos a 0 cada factor', `${str(F.ast)} = 0`, `${tex(F.ast)} = 0`));
+
+    const sols = []; // { txt, val (número real) | null, orden }
+    let verificado = true;
+    const evalExacto = (r) => U.coefs.reduceRight((s, c) => s.mul(r).add(c), new Frac(0));
+    const anadir = (txt, val, exacto) => { if (!sols.some((s) => s.txt === txt)) sols.push({ txt, val, exacto }); };
+
+    if (hayVar) {
+      for (const [x, e] of Object.entries(F.m)) {
+        pasos.push(paso(`Resolvemos el factor ${e > 1 ? `${x}^${e}` : x} = 0${e > 1 ? ` (aparece ${e} veces: raíz de multiplicidad ${e})` : ''}`, `${x} = 0`, `${x} = 0`));
+        anadir(`${x} = 0`, 0, new Frac(0));
+      }
+    }
+    for (const f of F.facts) {
+      const u = univ(f.p);
+      const fTxt = str(polyAst(f.p));
+      const mult = f.mult > 1 ? ` (aparece ${f.mult} veces: raíz de multiplicidad ${f.mult})` : '';
+      if (u.n === 1) {
+        const r = u.coefs[0].neg().div(u.coefs[1]);
+        pasos.push(paso(`Resolvemos el factor ${fTxt} = 0${mult}`, `${v} = ${fs(r)}`, `${v} = ${ftex(r)}`));
+        if (!evalExacto(r).isZero()) return null;
+        anadir(`${v} = ${fs(r)}`, r.toNumber(), r);
+      } else { // grado 2 irreducible en Q (Δ no cuadrado perfecto, o negativo)
+        const [c, b, a] = u.coefs;
+        if (![a, b, c].every((q) => q.isInt())) return null;
+        const A = Number(a.n), B = Number(b.n), C = Number(c.n);
+        const D = B * B - 4 * A * C;
+        if (!Number.isSafeInteger(D)) return null;
+        const raices = raicesCuadraticaTxt(A, B, D, v);
+        if (!raices) return null;
+        pasos.push(paso(`Aplicamos la fórmula general al factor ${fTxt} = 0 (Δ = ${D}${D < 0 ? ', negativo: las raíces son complejas' : ''})${mult}`, raices.textos.join(',  '), null));
+        raices.textos.forEach((t, i) => {
+          const val = raices.vals ? raices.vals[i] : null;
+          if (val !== null) { // comprobación numérica de la raíz real
+            const y = U.coefs.reduceRight((s, q) => s * val + q.toNumber(), 0);
+            const escala = U.coefs.reduce((s, q, j) => s + Math.abs(q.toNumber()) * Math.abs(val) ** j, 0);
+            if (!(Math.abs(y) <= 1e-9 * (1 + escala))) verificado = false;
+          }
+          anadir(t, val, null);
+        });
+      }
+    }
+    if (!verificado) return null;
+    sols.sort((p, q) => (p.val === null) - (q.val === null) || (p.val ?? 0) - (q.val ?? 0));
+    const resultado = sols.map((s) => s.txt).join(',  ');
+    pasos.push(paso('Soluciones de la ecuación (se reúnen las de todos los factores)', resultado, null));
+    return { ok: true, resultado, pasos: numerar(pasos), nivel: 'completo', verificado: true, metodo: 'Factorización' };
+  } catch (e) {
+    return null;
+  }
+}
